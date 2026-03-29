@@ -1,0 +1,85 @@
+name: Fixed Paths APK
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java & NDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: NDK Install
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+
+      - name: Build Preparation
+        run: |
+          # 1. Качаем либы
+          curl -L https://github.com/libsdl-org/SDL/releases/download/release-2.28.5/SDL2-2.28.5.zip -o sdl2.zip
+          unzip -q sdl2.zip && mv SDL2-2.28.5 sdl2
+          curl -L https://github.com/libsdl-org/SDL_image/releases/download/release-2.8.2/SDL2_image-2.8.2.zip -o sdl_img.zip
+          unzip -q sdl_img.zip && mv SDL2_image-2.8.2 sdl_image
+          curl -L https://github.com/libsdl-org/SDL_ttf/releases/download/release-2.22.0/SDL2_ttf-2.22.0.zip -o sdl_ttf.zip
+          unzip -q sdl_ttf.zip && mv SDL2_ttf-2.22.0 sdl_ttf
+          curl -L https://github.com/libsdl-org/SDL_mixer/releases/download/release-2.8.0/SDL2_mixer-2.8.0.zip -o sdl_mixer.zip
+          unzip -q sdl_mixer.zip && mv SDL2_mixer-2.8.0 sdl_mixer
+
+          # 2. Создаем структуру проекта СНАЧАЛА
+          cp -r sdl2/android-project .
+          
+          # ПРИНУДИТЕЛЬНО создаем все вложенные папки
+          mkdir -p android-project/app/src/main/jni/src
+          mkdir -p android-project/app/src/main/jni/SDL2
+          mkdir -p android-project/app/src/main/jni/SDL2_image
+          mkdir -p android-project/app/src/main/jni/SDL2_ttf
+          mkdir -p android-project/app/src/main/jni/SDL2_mixer
+          mkdir -p android-project/app/src/main/assets
+
+          # 3. Копируем файлы (теперь папки точно есть)
+          cp main.cxx android-project/app/src/main/jni/src/main.cpp
+          if [ -d "assets" ]; then cp -r assets/* android-project/app/src/main/assets/; fi
+
+          # Копируем содержимое либ
+          cp -r sdl2/* android-project/app/src/main/jni/SDL2/
+          cp -r sdl_image/* android-project/app/src/main/jni/SDL2_image/
+          cp -r sdl_ttf/* android-project/app/src/main/jni/SDL2_ttf/
+          cp -r sdl_mixer/* android-project/app/src/main/jni/SDL2_mixer/
+
+          # 4. Пишем конфиги
+          echo 'LOCAL_PATH := $(call my-dir)
+          include $(LOCAL_PATH)/SDL2/Android.mk
+          include $(LOCAL_PATH)/SDL2_image/Android.mk
+          include $(LOCAL_PATH)/SDL2_ttf/Android.mk
+          include $(LOCAL_PATH)/SDL2_mixer/Android.mk
+          include $(CLEAR_VARS)
+          LOCAL_MODULE := main
+          LOCAL_SRC_FILES := src/main.cpp
+          LOCAL_C_INCLUDES := $(LOCAL_PATH)/SDL2/include $(LOCAL_PATH)/SDL2_image $(LOCAL_PATH)/SDL2_ttf $(LOCAL_PATH)/SDL2_mixer
+          LOCAL_SHARED_LIBRARIES := SDL2 SDL2_image SDL2_ttf SDL2_mixer
+          LOCAL_LDLIBS := -lGLESv2 -llog -landroid -lz
+          include $(BUILD_SHARED_LIBRARY)' > android-project/app/src/main/jni/Android.mk
+
+          echo "APP_ABI := arm64-v8a
+          APP_PLATFORM := android-21
+          APP_STL := c++_shared" > android-project/app/src/main/jni/Application.mk
+
+          sed -i 's/abiFilters.*/abiFilters "arm64-v8a"/' android-project/app/build.gradle
+
+      - name: Build APK
+        working-directory: ./android-project
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: YardBattle-Final-APK
+          path: android-project/app/build/outputs/apk/debug/*.apk
