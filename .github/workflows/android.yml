@@ -1,0 +1,79 @@
+name: Nuclear Fix APK
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java & NDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: NDK Install
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+
+      - name: Force Preparation
+        run: |
+          # 1. Качаем и распаковываем
+          curl -L https://github.com/libsdl-org/SDL/releases/download/release-2.28.5/SDL2-2.28.5.zip -o sdl2.zip
+          unzip -q sdl2.zip
+          
+          # Находим путь к шаблону
+          SDL_PATH=$(find . -maxdepth 2 -name "android-project" -type d | head -n 1)
+          cp -r "$SDL_PATH" ./proj
+          
+          # Создаем чистую структуру jni
+          rm -rf ./proj/app/src/main/jni/*
+          mkdir -p ./proj/app/src/main/jni/src
+          mkdir -p ./proj/app/src/main/jni/sdl_libs
+          mkdir -p ./proj/app/src/main/assets
+
+          # 2. ТВОЙ КОД
+          cp main.cxx ./proj/app/src/main/jni/src/main.cpp
+          if [ -d "assets" ]; then cp -r assets/* ./proj/app/src/main/assets/; fi
+
+          # 3. ГЛАВНЫЙ ФИКС: Копируем ТОЛЬКО нужные файлы SDL2 в корень jni
+          # Мы берем папку src и include из распакованного архива
+          SRC_SDL=$(find . -maxdepth 2 -name "SDL2-2.28.5" -type d | head -n 1)
+          cp -r "$SRC_SDL"/* ./proj/app/src/main/jni/sdl_libs/
+
+          # 4. СОЗДАЕМ НОВЫЙ Android.mk (который не ошибается)
+          echo 'LOCAL_PATH := $(call my-dir)
+          # Подключаем SDL2 напрямую через его же файл
+          include $(LOCAL_PATH)/sdl_libs/Android.mk
+          
+          include $(CLEAR_VARS)
+          LOCAL_MODULE := main
+          LOCAL_SRC_FILES := src/main.cpp
+          LOCAL_C_INCLUDES := $(LOCAL_PATH)/sdl_libs/include
+          LOCAL_SHARED_LIBRARIES := SDL2
+          LOCAL_LDLIBS := -lGLESv2 -llog -landroid
+          include $(BUILD_SHARED_LIBRARY)' > ./proj/app/src/main/jni/Android.mk
+
+          # 5. Application.mk
+          echo "APP_ABI := arm64-v8a
+          APP_PLATFORM := android-21
+          APP_STL := c++_shared
+          APP_ALLOW_MISSING_DEPS := true" > ./proj/app/src/main/jni/Application.mk
+
+          # Фикс Gradle
+          sed -i 's/abiFilters.*/abiFilters "arm64-v8a"/' ./proj/app/build.gradle
+
+      - name: Build APK
+        working-directory: ./proj
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: YardBattle-Final-APK
+          path: proj/app/build/outputs/apk/debug/*.apk
