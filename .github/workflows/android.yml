@@ -1,0 +1,85 @@
+name: Zero Stress Build V2
+on: [push]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java & NDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: NDK Install
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+
+      - name: Preparation
+        run: |
+          # 1. Качаем SDL2
+          curl -L https://github.com/libsdl-org/SDL/releases/download/release-2.28.5/SDL2-2.28.5.zip -o sdl2.zip
+          unzip -q sdl2.zip
+          SDL_ROOT=$(pwd)/$(find . -maxdepth 1 -type d -name "SDL2-2.28.5")
+          
+          # 2. Создаем структуру проекта
+          cp -r "$SDL_ROOT/android-project" ./proj
+          mkdir -p ./proj/app/src/main/jni/src
+          cp main.cxx ./proj/app/src/main/jni/src/main.cpp
+          
+          # 3. Android.mk
+          echo "LOCAL_PATH := \$(call my-dir)
+          include \$(CLEAR_VARS)
+          LOCAL_MODULE := main
+          LOCAL_SRC_FILES := src/main.cpp
+          LOCAL_SHARED_LIBRARIES := SDL2
+          LOCAL_LDLIBS := -lGLESv2 -llog -landroid
+          include \$(BUILD_SHARED_LIBRARY)
+          \$(call import-module,.)" > ./proj/app/src/main/jni/Android.mk
+
+          # 4. Application.mk
+          echo "APP_ABI := arm64-v8a
+          APP_PLATFORM := android-21
+          APP_STL := c++_shared" > ./proj/app/src/main/jni/Application.mk
+
+          # 5. ГЕНЕРИРУЕМ НОВЫЙ build.gradle (Никакого sed!)
+          # Мы просто записываем текст в файл с помощью cat
+          cat <<EOF > ./proj/app/build.gradle
+          apply plugin: 'com.android.application'
+          android {
+              namespace "org.libsdl.app"
+              compileSdkVersion 34
+              defaultConfig {
+                  applicationId "com.yourgame.yardbattle"
+                  minSdkVersion 21
+                  targetSdkVersion 34
+                  externalNativeBuild {
+                      ndkBuild {
+                          arguments "NDK_MODULE_PATH=$SDL_ROOT"
+                          abiFilters 'arm64-v8a'
+                      }
+                  }
+              }
+              externalNativeBuild {
+                  ndkBuild {
+                      path 'src/main/jni/Android.mk'
+                  }
+              }
+          }
+          EOF
+
+      - name: Build APK
+        working-directory: ./proj
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: YardBattle-Final-APK
+          path: proj/app/build/outputs/apk/debug/*.apk
